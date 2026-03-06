@@ -87,7 +87,7 @@ handle_event(_Event, Measurements, Metadata, Config) ->
         ok ->
             ok
     end,
-    otel_span:end_span(SpanCtx, #{timestamp => opentelemetry:timestamp()}),
+    otel_span:end_span(SpanCtx, opentelemetry:timestamp()),
     ok.
 
 -spec span_name(binary(), binary() | undefined) -> binary().
