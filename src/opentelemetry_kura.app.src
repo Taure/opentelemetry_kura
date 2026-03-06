@@ -1,0 +1,10 @@
+{application, opentelemetry_kura, [
+    {description, "OpenTelemetry instrumentation for Kura database layer"},
+    {vsn, "git"},
+    {registered, []},
+    {applications, [kernel, stdlib, telemetry, opentelemetry_api]},
+    {env, []},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, [{"GitHub", "https://github.com/novaframework/opentelemetry_kura"}]}
+]}.
