@@ -6,5 +6,5 @@
     {env, []},
     {modules, []},
     {licenses, ["MIT"]},
-    {links, [{"GitHub", "https://github.com/novaframework/opentelemetry_kura"}]}
+    {links, [{"GitHub", "https://github.com/Taure/opentelemetry_kura"}]}
 ]}.
