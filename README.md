@@ -38,6 +38,7 @@ Each span includes:
 | `db.collection.name` | Table name (when extractable) |
 | `db.kura.repo` | Repo module name |
 | `db.kura.num_rows` | Number of rows returned/affected |
+| `db.query.parameter_count` | Number of bound query parameters |
 
 Span names follow the `"OPERATION table"` convention (e.g. `"SELECT users"`, `"INSERT posts"`).
 
