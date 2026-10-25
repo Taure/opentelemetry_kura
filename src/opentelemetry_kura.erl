@@ -20,7 +20,6 @@ opentelemetry_kura:setup().
 -endif.
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
--eqwalizer({nowarn_function, setup/1}).
 
 -doc "Attach the telemetry handler with default options.".
 -spec setup() -> ok.
@@ -46,21 +45,10 @@ setup(Opts) ->
     ok.
 
 -doc false.
--spec handle_event(
-    [atom()],
-    #{duration := integer(), duration_us := integer()},
-    #{
-        query := binary(),
-        params := list(),
-        repo := module(),
-        result := ok | error,
-        num_rows := non_neg_integer(),
-        source := binary() | undefined,
-        tenant := undefined | {prefix, binary()} | {attribute, {atom(), term()}},
-        error_reason := term() | undefined
-    },
-    map()
-) -> ok.
+%% Measurements and metadata are whatever kura's `[kura, repo, query]` event
+%% carries, and the config is the map setup/1 attached; telemetry hands all
+%% three back untyped.
+-spec handle_event(telemetry:event_name(), dynamic(), dynamic(), dynamic()) -> ok.
 handle_event(_Event, Measurements, Metadata, Config) ->
     #{
         query := Query,
