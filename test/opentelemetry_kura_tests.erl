@@ -16,34 +16,73 @@ extract_operation_test() ->
     ?assertEqual(~"ROLLBACK", opentelemetry_kura:extract_operation(~"ROLLBACK")),
     ?assertEqual(~"OTHER", opentelemetry_kura:extract_operation(~"EXPLAIN SELECT 1")).
 
+query_summary_test() ->
+    ?assertEqual(~"SELECT users", opentelemetry_kura:query_summary(~"SELECT", ~"users")),
+    ?assertEqual(~"INSERT posts", opentelemetry_kura:query_summary(~"INSERT", ~"posts")),
+    ?assertEqual(~"BEGIN", opentelemetry_kura:query_summary(~"BEGIN", undefined)),
+    ?assertEqual(undefined, opentelemetry_kura:query_summary(~"OTHER", ~"users")),
+    ?assertEqual(undefined, opentelemetry_kura:query_summary(~"OTHER", undefined)).
+
 span_name_test() ->
-    ?assertEqual(~"SELECT users", opentelemetry_kura:span_name(~"SELECT", ~"users")),
-    ?assertEqual(~"INSERT posts", opentelemetry_kura:span_name(~"INSERT", ~"posts")),
-    ?assertEqual(~"SELECT", opentelemetry_kura:span_name(~"SELECT", undefined)).
+    Base = #{'db.system.name' => ~"postgresql"},
+    ?assertEqual(
+        ~"SELECT users",
+        opentelemetry_kura:span_name(Base#{
+            'db.query.summary' => ~"SELECT users", 'db.namespace' => ~"app"
+        })
+    ),
+    ?assertEqual(
+        ~"app|acme",
+        opentelemetry_kura:span_name(Base#{
+            'db.namespace' => ~"app|acme", 'server.address' => ~"db.local"
+        })
+    ),
+    ?assertEqual(
+        ~"db.local:6432",
+        opentelemetry_kura:span_name(Base#{
+            'server.address' => ~"db.local", 'server.port' => 6432
+        })
+    ),
+    ?assertEqual(
+        ~"db.local", opentelemetry_kura:span_name(Base#{'server.address' => ~"db.local"})
+    ),
+    ?assertEqual(~"postgresql", opentelemetry_kura:span_name(Base)).
 
-maybe_add_source_test() ->
-    Base = #{'db.system' => ~"postgresql"},
-    ?assertEqual(
-        Base#{'db.collection.name' => ~"users"},
-        opentelemetry_kura:maybe_add_source(Base, ~"users")
-    ),
-    ?assertEqual(Base, opentelemetry_kura:maybe_add_source(Base, undefined)).
+namespace_test() ->
+    ?assertEqual(~"app", opentelemetry_kura:namespace(~"app", undefined)),
+    ?assertEqual(~"app|acme", opentelemetry_kura:namespace(~"app", {prefix, ~"acme"})),
+    ?assertEqual(~"acme", opentelemetry_kura:namespace(undefined, {prefix, ~"acme"})),
+    ?assertEqual(~"app", opentelemetry_kura:namespace(~"app", {attribute, {org_id, 1}})),
+    ?assertEqual(undefined, opentelemetry_kura:namespace(undefined, undefined)).
 
-maybe_add_tenant_test() ->
-    Base = #{'db.system' => ~"postgresql"},
-    ?assertEqual(Base, opentelemetry_kura:maybe_add_tenant(Base, undefined)),
+error_attributes_test() ->
+    ?assertEqual(#{}, opentelemetry_kura:error_attributes(ok, undefined)),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"acme"},
-        opentelemetry_kura:maybe_add_tenant(Base, {prefix, ~"acme"})
+        #{'error.type' => ~"23505", 'db.response.status_code' => ~"23505"},
+        opentelemetry_kura:error_attributes(
+            error, {pgsql_error, #{code => ~"23505", constraint => ~"users_name_key"}}
+        )
     ),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"org_id:42"},
-        opentelemetry_kura:maybe_add_tenant(Base, {attribute, {org_id, 42}})
+        #{'error.type' => ~"timeout"}, opentelemetry_kura:error_attributes(error, timeout)
     ),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"region:eu-west"},
-        opentelemetry_kura:maybe_add_tenant(Base, {attribute, {region, ~"eu-west"}})
-    ).
+        #{'error.type' => ~"unique_violation"},
+        opentelemetry_kura:error_attributes(error, {unique_violation, ~"users_name_key"})
+    ),
+    ?assertEqual(
+        #{'error.type' => ~"_OTHER"}, opentelemetry_kura:error_attributes(error, undefined)
+    ),
+    ?assertEqual(#{'error.type' => ~"_OTHER"}, opentelemetry_kura:error_attributes(error, "boom")).
+
+stability_mode_test() ->
+    ?assertEqual(stable, opentelemetry_kura:stability_mode(false)),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("")),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("database")),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("http/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("database/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("http, database/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("database,database/dup")).
 
 format_value_test() ->
     ?assertEqual(~"hello", opentelemetry_kura:format_value(~"hello")),
