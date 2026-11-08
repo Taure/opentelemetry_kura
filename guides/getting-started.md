@@ -75,7 +75,7 @@ opentelemetry_kura:setup(#{
 | `returned_rows`     | `false`         | Set `db.response.returned_rows`                     |
 | `repos`             | `#{}`           | Per-repo `system`, `namespace`, `server_address`, `server_port` |
 | `tenant_in_namespace` | `false`       | Put a prefix tenant's schema in `db.namespace`      |
-| `sanitize_query`    | unset           | `true` or a `fun/1` to redact `db.query.text`       |
+| `sanitize_query`    | unset           | `true` or `{Mod, Fun}` to redact `db.query.text`    |
 
 ## Viewing traces
 

@@ -89,7 +89,9 @@ Options:
   as `db.kura.tenant`. It never reaches the span name or the metric
   (default: `false`).
 - `sanitize_query`: when `true`, replaces the query text with `[SANITIZED]`.
-  When a `fun/1`, applies the function to the query. Default: full query.
+  When `{Mod, Fun}`, records `Mod:Fun(Query)`; a result that is not a binary
+  records `[SANITIZED]`. A `fun/1` still works but is deprecated in favour of
+  `{Mod, Fun}`. Default: full query.
 """.
 -spec setup(map()) -> ok.
 setup(Opts) ->
@@ -399,9 +401,18 @@ format_value(V) ->
 
 -doc false.
 -spec sanitize_query(binary(), map()) -> binary().
-sanitize_query(Query, #{sanitize_query := Fun}) when is_function(Fun, 1) -> Fun(Query);
-sanitize_query(_Query, #{sanitize_query := true}) -> ~"[SANITIZED]";
-sanitize_query(Query, _Config) -> Query.
+sanitize_query(Query, #{sanitize_query := {Mod, Fun}}) when is_atom(Mod), is_atom(Fun) ->
+    sanitized(Mod:Fun(Query));
+sanitize_query(Query, #{sanitize_query := Fun}) when is_function(Fun, 1) ->
+    sanitized(Fun(Query));
+sanitize_query(_Query, #{sanitize_query := true}) ->
+    ~"[SANITIZED]";
+sanitize_query(Query, _Config) ->
+    Query.
+
+-spec sanitized(term()) -> binary().
+sanitized(Text) when is_binary(Text) -> Text;
+sanitized(_Text) -> ~"[SANITIZED]".
 
 -spec maybe_set_error(opentelemetry:span_ctx(), map()) -> ok.
 maybe_set_error(SpanCtx, #{'error.type' := ErrorType}) ->

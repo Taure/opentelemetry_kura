@@ -75,7 +75,7 @@ opentelemetry_kura:setup(#{
 | `returned_rows` | `false` | Set `db.response.returned_rows` |
 | `repos` | `#{}` | Per-repo `system`, `namespace`, `server_address`, `server_port` |
 | `tenant_in_namespace` | `false` | Put a prefix tenant's schema in the span's `db.namespace` instead of `db.kura.tenant` |
-| `sanitize_query` | unset | `true` records `[SANITIZED]`; a `fun/1` rewrites the query text |
+| `sanitize_query` | unset | `true` records `[SANITIZED]`; `{Mod, Fun}` records `Mod:Fun(Query)` (`[SANITIZED]` if that is not a binary). A `fun/1` still works but is deprecated |
 
 `setup/1` raises `{invalid_repos, Repos}` for a `repos` entry with an unknown key or a wrongly typed value.
 

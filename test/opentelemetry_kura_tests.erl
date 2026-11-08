@@ -1,6 +1,8 @@
 -module(opentelemetry_kura_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+-export([redact/1]).
+
 extract_operation_test() ->
     ?assertEqual(~"SELECT", opentelemetry_kura:extract_operation(~"SELECT * FROM users")),
     ?assertEqual(~"INSERT", opentelemetry_kura:extract_operation(~"INSERT INTO users")),
@@ -102,7 +104,18 @@ sanitize_query_test() ->
     ?assertEqual(
         ~"REDACTED: SELECT * FROM users WHERE id = $1",
         opentelemetry_kura:sanitize_query(Query, #{sanitize_query => Fun})
+    ),
+    ?assertEqual(
+        ~"SELECT ?",
+        opentelemetry_kura:sanitize_query(Query, #{sanitize_query => {?MODULE, redact}})
+    ),
+    ?assertEqual(
+        ~"[SANITIZED]",
+        opentelemetry_kura:sanitize_query(Query, #{sanitize_query => {erlang, binary_to_list}})
     ).
+
+redact(_Query) ->
+    ~"SELECT ?".
 
 invalid_repos_test() ->
     [
