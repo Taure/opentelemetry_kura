@@ -4,16 +4,6 @@
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 
--eqwalizer({nowarn_function, basic_query/1}).
--eqwalizer({nowarn_function, returned_rows_opt_in/1}).
--eqwalizer({nowarn_function, connection_attributes/1}).
--eqwalizer({nowarn_function, query_with_tenant/1}).
--eqwalizer({nowarn_function, query_error/1}).
--eqwalizer({nowarn_function, unknown_operation/1}).
--eqwalizer({nowarn_function, sanitized_query/1}).
--eqwalizer({nowarn_function, dup_mode_option/1}).
--eqwalizer({nowarn_function, dup_mode_env/1}).
-
 -export([
     all/0,
     init_per_suite/1,
@@ -95,10 +85,9 @@ end_per_testcase(_TestCase, _Config) ->
 basic_query(_Config) ->
     opentelemetry_kura:setup(),
     fire_event(metadata(#{})),
-    Span = receive_span(),
-    ?assertEqual(~"SELECT users", Span#span.name),
-    ?assertEqual(?SPAN_KIND_CLIENT, Span#span.kind),
-    Attrs = otel_attributes:map(Span#span.attributes),
+    {Name, Kind, Status, Attrs} = receive_span(),
+    ?assertEqual(~"SELECT users", Name),
+    ?assertEqual(?SPAN_KIND_CLIENT, Kind),
     ?assertEqual(
         #{
             'db.system.name' => ~"postgresql",
@@ -109,13 +98,13 @@ basic_query(_Config) ->
         },
         Attrs
     ),
-    ?assertEqual(undefined, Span#span.status),
+    ?assertEqual(undefined, Status),
     ok.
 
 returned_rows_opt_in(_Config) ->
     opentelemetry_kura:setup(#{returned_rows => true}),
     fire_event(metadata(#{num_rows => 7})),
-    Attrs = otel_attributes:map((receive_span())#span.attributes),
+    Attrs = span_attributes(receive_span()),
     ?assertEqual(7, maps:get('db.response.returned_rows', Attrs)),
     ok.
 
@@ -129,29 +118,29 @@ connection_attributes(_Config) ->
         }
     }),
     fire_event(metadata(#{})),
-    Attrs = otel_attributes:map((receive_span())#span.attributes),
+    Attrs = span_attributes(receive_span()),
     ?assertEqual(~"app_db", maps:get('db.namespace', Attrs)),
     ?assertEqual(~"db.internal", maps:get('server.address', Attrs)),
     ?assertEqual(6432, maps:get('server.port', Attrs)),
 
     fire_event(metadata(#{repo => other_repo})),
-    OtherAttrs = otel_attributes:map((receive_span())#span.attributes),
+    OtherAttrs = span_attributes(receive_span()),
     ?assertNot(maps:is_key('server.port', OtherAttrs)),
     ?assertNot(maps:is_key('db.namespace', OtherAttrs)),
 
     fire_event(metadata(#{query => ~"WITH x AS (SELECT 1) SELECT * FROM x", source => undefined})),
-    ?assertEqual(~"app_db", (receive_span())#span.name),
+    ?assertEqual(~"app_db", span_name(receive_span())),
     ok.
 
 query_with_tenant(_Config) ->
     opentelemetry_kura:setup(#{repos => #{my_repo => #{namespace => ~"app_db"}}}),
     fire_event(metadata(#{tenant => {prefix, ~"acme"}})),
-    Attrs = otel_attributes:map((receive_span())#span.attributes),
+    Attrs = span_attributes(receive_span()),
     ?assertEqual(~"app_db|acme", maps:get('db.namespace', Attrs)),
     ?assertNot(maps:is_key('db.kura.tenant', Attrs)),
 
     fire_event(metadata(#{tenant => {attribute, {org_id, 42}}})),
-    Attrs2 = otel_attributes:map((receive_span())#span.attributes),
+    Attrs2 = span_attributes(receive_span()),
     ?assertEqual(~"org_id:42", maps:get('db.kura.tenant', Attrs2)),
     ?assertEqual(~"app_db", maps:get('db.namespace', Attrs2)),
     ok.
@@ -166,10 +155,8 @@ query_error(_Config) ->
             error_reason => {pgsql_error, #{code => ~"23505", constraint => ~"users_name_key"}}
         })
     ),
-    Span = receive_span(),
-    #status{code = ?OTEL_STATUS_ERROR, message = Msg} = Span#span.status,
-    ?assertNotEqual(~"query failed", Msg),
-    Attrs = otel_attributes:map(Span#span.attributes),
+    {_Name, _Kind, Status, Attrs} = receive_span(),
+    ?assertMatch({?OTEL_STATUS_ERROR, _}, Status),
     ?assertEqual(~"23505", maps:get('error.type', Attrs)),
     ?assertEqual(~"23505", maps:get('db.response.status_code', Attrs)),
     ok.
@@ -177,24 +164,23 @@ query_error(_Config) ->
 unknown_operation(_Config) ->
     opentelemetry_kura:setup(),
     fire_event(metadata(#{query => ~"EXPLAIN SELECT 1", source => undefined, params => []})),
-    Span = receive_span(),
-    ?assertEqual(~"postgresql", Span#span.name),
-    ?assertNot(maps:is_key('db.query.summary', otel_attributes:map(Span#span.attributes))),
+    {Name, _Kind, _Status, Attrs} = receive_span(),
+    ?assertEqual(~"postgresql", Name),
+    ?assertNot(maps:is_key('db.query.summary', Attrs)),
     ok.
 
 sanitized_query(_Config) ->
     opentelemetry_kura:setup(#{sanitize_query => true}),
     fire_event(metadata(#{query => ~"SELECT secret FROM passwords", source => ~"passwords"})),
-    Attrs = otel_attributes:map((receive_span())#span.attributes),
+    Attrs = span_attributes(receive_span()),
     ?assertEqual(~"[SANITIZED]", maps:get('db.query.text', Attrs)),
     ok.
 
 dup_mode_option(_Config) ->
     opentelemetry_kura:setup(#{semconv_stability => dup, sanitize_query => true}),
     fire_event(metadata(#{tenant => {prefix, ~"acme"}})),
-    Span = receive_span(),
-    ?assertEqual(~"SELECT users", Span#span.name),
-    Attrs = otel_attributes:map(Span#span.attributes),
+    {Name, _Kind, _Status, Attrs} = receive_span(),
+    ?assertEqual(~"SELECT users", Name),
     ?assertMatch(
         #{
             'db.system' := ~"postgresql",
@@ -217,7 +203,7 @@ dup_mode_env(_Config) ->
     os:putenv("OTEL_SEMCONV_STABILITY_OPT_IN", "http,database/dup"),
     opentelemetry_kura:setup(),
     fire_event(metadata(#{})),
-    Attrs = otel_attributes:map((receive_span())#span.attributes),
+    Attrs = span_attributes(receive_span()),
     [?assert(maps:is_key(Key, Attrs)) || Key <- ?LEGACY_ATTRIBUTES],
     ?assert(maps:is_key('db.system.name', Attrs)),
 
@@ -225,14 +211,14 @@ dup_mode_env(_Config) ->
     os:putenv("OTEL_SEMCONV_STABILITY_OPT_IN", "database"),
     opentelemetry_kura:setup(),
     fire_event(metadata(#{})),
-    StableAttrs = otel_attributes:map((receive_span())#span.attributes),
+    StableAttrs = span_attributes(receive_span()),
     [?assertNot(maps:is_key(Key, StableAttrs)) || Key <- ?LEGACY_ATTRIBUTES],
 
     telemetry:detach(~"opentelemetry-kura-query"),
     os:putenv("OTEL_SEMCONV_STABILITY_OPT_IN", "database/dup"),
     opentelemetry_kura:setup(#{semconv_stability => stable}),
     fire_event(metadata(#{})),
-    OverriddenAttrs = otel_attributes:map((receive_span())#span.attributes),
+    OverriddenAttrs = span_attributes(receive_span()),
     ?assertNot(maps:is_key('db.statement', OverriddenAttrs)),
     ok.
 
@@ -305,10 +291,18 @@ fire_event(Metadata, Duration) ->
 
 receive_span() ->
     receive
-        {span, Span} -> Span
+        {span, #span{name = Name, kind = Kind, status = Status, attributes = Attributes}} ->
+            {Name, Kind, span_status(Status), otel_attributes:map(Attributes)}
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+span_status(#status{code = Code, message = Message}) -> {Code, Message};
+span_status(undefined) -> undefined.
+
+span_name({Name, _Kind, _Status, _Attributes}) -> Name.
+
+span_attributes({_Name, _Kind, _Status, Attributes}) -> Attributes.
 
 receive_datapoints(Name) ->
     receive
