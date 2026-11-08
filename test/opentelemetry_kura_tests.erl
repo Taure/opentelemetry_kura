@@ -49,11 +49,8 @@ span_name_test() ->
     ?assertEqual(~"postgresql", opentelemetry_kura:span_name(Base)).
 
 namespace_test() ->
-    ?assertEqual(~"app", opentelemetry_kura:namespace(~"app", undefined)),
-    ?assertEqual(~"app|acme", opentelemetry_kura:namespace(~"app", {prefix, ~"acme"})),
-    ?assertEqual(~"acme", opentelemetry_kura:namespace(undefined, {prefix, ~"acme"})),
-    ?assertEqual(~"app", opentelemetry_kura:namespace(~"app", {attribute, {org_id, 1}})),
-    ?assertEqual(undefined, opentelemetry_kura:namespace(undefined, undefined)).
+    ?assertEqual(~"app|acme", opentelemetry_kura:namespace(~"app", ~"acme")),
+    ?assertEqual(~"acme", opentelemetry_kura:namespace(undefined, ~"acme")).
 
 error_attributes_test() ->
     ?assertEqual(#{}, opentelemetry_kura:error_attributes(ok, undefined)),

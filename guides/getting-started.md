@@ -45,7 +45,7 @@ semantic conventions:
 | `db.system.name`   | `~"postgresql"`              | Database system                   |
 | `db.query.text`    | `~"SELECT ... WHERE id = $1"`| The SQL query                     |
 | `db.query.summary` | `~"SELECT users"`            | Operation and table               |
-| `db.namespace`     | `~"my_db\|acme"`             | Database and tenant schema        |
+| `db.namespace`     | `~"my_db"`                   | Configured database name          |
 | `db.kura.repo`     | `~"my_app_repo"`             | Kura repo module                  |
 
 The span name is `db.query.summary`, for example `"SELECT users"` or
@@ -73,6 +73,7 @@ opentelemetry_kura:setup(#{
 | `semconv_stability` | `stable`        | `dup` also emits the 0.2 attribute names            |
 | `returned_rows`     | `false`         | Set `db.response.returned_rows`                     |
 | `repos`             | `#{}`           | Per-repo `namespace`, `server_address`, `server_port` |
+| `tenant_in_namespace` | `false`       | Put a prefix tenant's schema in `db.namespace`      |
 | `sanitize_query`    | unset           | `true` or a `fun/1` to redact `db.query.text`       |
 
 ## Viewing traces

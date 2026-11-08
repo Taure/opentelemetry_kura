@@ -22,7 +22,9 @@
     sanitized_query/1,
     dup_mode_option/1,
     dup_mode_env/1,
-    duration_metric/1
+    duration_metric/1,
+    tenant_in_namespace/1,
+    prefix_tenant_metric/1
 ]).
 
 -define(LEGACY_ATTRIBUTES, [
@@ -40,12 +42,14 @@ all() ->
         returned_rows_opt_in,
         connection_attributes,
         query_with_tenant,
+        tenant_in_namespace,
         query_error,
         unknown_operation,
         sanitized_query,
         dup_mode_option,
         dup_mode_env,
-        duration_metric
+        duration_metric,
+        prefix_tenant_metric
     ].
 
 init_per_suite(Config) ->
@@ -134,15 +138,32 @@ connection_attributes(_Config) ->
 
 query_with_tenant(_Config) ->
     opentelemetry_kura:setup(#{repos => #{my_repo => #{namespace => ~"app_db"}}}),
-    fire_event(metadata(#{tenant => {prefix, ~"acme"}})),
-    Attrs = span_attributes(receive_span()),
-    ?assertEqual(~"app_db|acme", maps:get('db.namespace', Attrs)),
-    ?assertNot(maps:is_key('db.kura.tenant', Attrs)),
+    fire_event(prefix_tenant_metadata(#{})),
+    {Name, _Kind, _Status, Attrs} = receive_span(),
+    ?assertEqual(~"SELECT", Name),
+    ?assertEqual(~"SELECT", maps:get('db.query.summary', Attrs)),
+    ?assertEqual(~"app_db", maps:get('db.namespace', Attrs)),
+    ?assertEqual(~"acme", maps:get('db.kura.tenant', Attrs)),
 
     fire_event(metadata(#{tenant => {attribute, {org_id, 42}}})),
     Attrs2 = span_attributes(receive_span()),
     ?assertEqual(~"org_id:42", maps:get('db.kura.tenant', Attrs2)),
     ?assertEqual(~"app_db", maps:get('db.namespace', Attrs2)),
+    ?assertEqual(~"SELECT users", maps:get('db.query.summary', Attrs2)),
+    ok.
+
+tenant_in_namespace(_Config) ->
+    opentelemetry_kura:setup(#{
+        tenant_in_namespace => true, repos => #{my_repo => #{namespace => ~"app_db"}}
+    }),
+    fire_event(prefix_tenant_metadata(#{})),
+    {Name, _Kind, _Status, Attrs} = receive_span(),
+    ?assertEqual(~"SELECT", Name),
+    ?assertEqual(~"app_db|acme", maps:get('db.namespace', Attrs)),
+    ?assertNot(maps:is_key('db.kura.tenant', Attrs)),
+
+    fire_event(prefix_tenant_metadata(#{query => ~"EXPLAIN SELECT 1"})),
+    ?assertEqual(~"app_db", span_name(receive_span())),
     ok.
 
 query_error(_Config) ->
@@ -178,7 +199,7 @@ sanitized_query(_Config) ->
 
 dup_mode_option(_Config) ->
     opentelemetry_kura:setup(#{semconv_stability => dup, sanitize_query => true}),
-    fire_event(metadata(#{tenant => {prefix, ~"acme"}})),
+    fire_event(metadata(#{tenant => {attribute, {org_id, 7}}})),
     {Name, _Kind, _Status, Attrs} = receive_span(),
     ?assertEqual(~"SELECT users", Name),
     ?assertMatch(
@@ -189,11 +210,10 @@ dup_mode_option(_Config) ->
             'db.collection.name' := ~"users",
             'db.kura.num_rows' := 1,
             'db.query.parameter_count' := 1,
-            'db.kura.tenant' := ~"acme",
+            'db.kura.tenant' := ~"org_id:7",
             'db.system.name' := ~"postgresql",
             'db.query.text' := ~"[SANITIZED]",
-            'db.query.summary' := ~"SELECT users",
-            'db.namespace' := ~"acme"
+            'db.query.summary' := ~"SELECT users"
         },
         Attrs
     ),
@@ -266,7 +286,44 @@ duration_metric(_Config) ->
     ?assertEqual(~"57014", maps:get('db.response.status_code', Failed)),
     ok.
 
+prefix_tenant_metric(_Config) ->
+    opentelemetry_kura:setup(#{
+        tenant_in_namespace => true,
+        repos => #{tenant_repo => #{namespace => ~"tenant_db"}}
+    }),
+    fire_event(prefix_tenant_metadata(#{repo => tenant_repo})),
+    _ = receive_span(),
+    otel_meter_server:force_flush(),
+    Datapoints = receive_datapoints('db.client.operation.duration'),
+    ?assertEqual(
+        [
+            #{
+                'db.system.name' => ~"postgresql",
+                'db.namespace' => ~"tenant_db",
+                'db.query.summary' => ~"SELECT"
+            }
+        ],
+        [A || #{attributes := #{'db.namespace' := ~"tenant_db"} = A} <- Datapoints]
+    ),
+    ?assertEqual([], [A || #{attributes := A} <- Datapoints, has_value(~"acme", A)]),
+    ok.
+
 %% Helpers
+
+prefix_tenant_metadata(Overrides) ->
+    metadata(
+        maps:merge(
+            #{
+                query => ~"SELECT * FROM \"acme\".\"users\" WHERE id = $1",
+                source => ~"acme",
+                tenant => {prefix, ~"acme"}
+            },
+            Overrides
+        )
+    ).
+
+has_value(Needle, Attributes) ->
+    [] =/= [V || _ := V <- Attributes, is_binary(V), binary:match(V, Needle) =/= nomatch].
 
 metadata(Overrides) ->
     maps:merge(

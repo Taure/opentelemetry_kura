@@ -69,6 +69,10 @@ Options:
   attribute (default: `false`).
 - `repos`: a map from repo module to `t:connection/0`, the source of
   `db.namespace`, `server.address` and `server.port`.
+- `tenant_in_namespace`: when `true`, a prefix tenant's schema is appended to
+  the span's `db.namespace` (`{database}|{schema}`) instead of being recorded
+  as `db.kura.tenant`. It never reaches the span name or the metric
+  (default: `false`).
 - `sanitize_query`: when `true`, replaces the query text with `[SANITIZED]`.
   When a `fun/1`, applies the function to the query. Default: full query.
 """.
@@ -105,7 +109,8 @@ handle_event(_Event, Measurements, Metadata, Config) ->
     } = Metadata,
     Duration = maps:get(duration, Measurements),
     QueryText = sanitize_query(Query, Config),
-    Attributes = stable_attributes(Metadata, Config),
+    Target = target_attributes(Metadata, Config),
+    Attributes = maps:merge(Target, span_attributes(Metadata, Config)),
     AllAttributes =
         case maps:get(semconv_stability, Config, stable) of
             dup -> maps:merge(legacy_attributes(QueryText, Metadata, Config), Attributes);
@@ -114,7 +119,7 @@ handle_event(_Event, Measurements, Metadata, Config) ->
     EndTime = opentelemetry:timestamp(),
     SpanCtx = otel_tracer:start_span(
         opentelemetry:get_application_tracer(?MODULE),
-        span_name(Attributes),
+        span_name(Target),
         #{
             start_time => EndTime - Duration,
             kind => ?SPAN_KIND_CLIENT,
@@ -129,7 +134,7 @@ handle_event(_Event, Measurements, Metadata, Config) ->
         meter(),
         ?DURATION_METRIC,
         Seconds,
-        maps:with(?METRIC_ATTRIBUTES, Attributes)
+        maps:with(?METRIC_ATTRIBUTES, Target)
     ),
     ok.
 
@@ -138,36 +143,61 @@ meter() ->
     #instrumentation_scope{} = Scope = opentelemetry:get_application_scope(?MODULE),
     opentelemetry_experimental:get_meter(Scope).
 
--spec stable_attributes(map(), map()) -> map().
-stable_attributes(Metadata, Config) ->
+-spec target_attributes(map(), map()) -> map().
+target_attributes(Metadata, Config) ->
     #{
         query := Query,
-        params := Params,
         repo := Repo,
         result := Result,
-        num_rows := NumRows,
         source := Source,
         tenant := Tenant,
         error_reason := ErrorReason
     } = Metadata,
     Connection = maps:get(Repo, maps:get(repos, Config, #{}), #{}),
+    Optional = [
+        {'db.query.summary',
+            query_summary(extract_operation(Query), summary_source(Source, Tenant))},
+        {'db.namespace', maps:get(namespace, Connection, undefined)},
+        {'server.address', maps:get(server_address, Connection, undefined)},
+        {'server.port', server_port(Connection)}
+    ],
+    maps:merge(
+        error_attributes(Result, ErrorReason),
+        defined(Optional, #{'db.system.name' => maps:get(db_system, Config, ~"postgresql")})
+    ).
+
+-spec span_attributes(map(), map()) -> map().
+span_attributes(Metadata, Config) ->
+    #{
+        params := Params,
+        repo := Repo,
+        num_rows := NumRows,
+        tenant := Tenant
+    } = Metadata,
+    Connection = maps:get(Repo, maps:get(repos, Config, #{}), #{}),
     Base = #{
-        'db.system.name' => maps:get(db_system, Config, ~"postgresql"),
         'db.kura.repo' => atom_to_binary(Repo, utf8),
         'db.kura.query.parameter_count' => length(Params)
     },
     Optional = [
-        {'db.query.summary', query_summary(extract_operation(Query), Source)},
-        {'db.namespace', namespace(maps:get(namespace, Connection, undefined), Tenant)},
-        {'db.kura.tenant', attribute_tenant(Tenant)},
-        {'server.address', maps:get(server_address, Connection, undefined)},
-        {'server.port', server_port(Connection)},
         {'db.response.returned_rows', returned_rows(NumRows, Config)}
+        | tenant_attributes(maps:get(namespace, Connection, undefined), Tenant, Config)
     ],
-    maps:merge(
-        error_attributes(Result, ErrorReason),
-        maps:merge(Base, #{K => V || {K, V} <- Optional, V =/= undefined})
-    ).
+    defined(Optional, Base).
+
+-spec defined([{atom(), term()}], map()) -> map().
+defined(Optional, Attributes) ->
+    maps:merge(Attributes, #{K => V || {K, V} <- Optional, V =/= undefined}).
+
+-spec summary_source(binary() | undefined, tenant()) -> binary() | undefined.
+summary_source(_Source, {prefix, _Schema}) -> undefined;
+summary_source(Source, _Tenant) -> Source.
+
+-spec tenant_attributes(binary() | undefined, tenant(), map()) -> [{atom(), term()}].
+tenant_attributes(Database, {prefix, Schema}, #{tenant_in_namespace := true}) ->
+    [{'db.namespace', namespace(Database, Schema)}];
+tenant_attributes(_Database, Tenant, _Config) ->
+    [{'db.kura.tenant', tenant_label(Tenant)}].
 
 -spec legacy_attributes(binary(), map(), map()) -> map().
 legacy_attributes(QueryText, Metadata, Config) ->
@@ -185,8 +215,7 @@ legacy_attributes(QueryText, Metadata, Config) ->
         'db.kura.num_rows' => NumRows,
         'db.query.parameter_count' => length(Params)
     },
-    Optional = [{'db.collection.name', Source}, {'db.kura.tenant', legacy_tenant(Tenant)}],
-    maps:merge(Legacy, #{K => V || {K, V} <- Optional, V =/= undefined}).
+    defined([{'db.collection.name', Source}, {'db.kura.tenant', tenant_label(Tenant)}], Legacy).
 
 -doc """
 Resolve the semantic-convention mode from the value of
@@ -206,6 +235,8 @@ stability_mode(OptIn) ->
 -doc """
 Low-cardinality `db.query.summary`: the operation followed by the table kura
 reports for the query. `undefined` when the operation is not recognised.
+Under a prefix tenant the table is left out, since kura then reports the
+tenant schema.
 """.
 -spec query_summary(binary(), binary() | undefined) -> binary() | undefined.
 query_summary(~"OTHER", _Source) -> undefined;
@@ -213,8 +244,9 @@ query_summary(Operation, undefined) -> Operation;
 query_summary(Operation, Source) -> <<Operation/binary, " ", Source/binary>>.
 
 -doc """
-Span name from the stable attributes: `db.query.summary`, else the target
-(`db.namespace`, then `server.address[:server.port]`), else `db.system.name`.
+Span name from the tenant-free attributes: `db.query.summary`, else the
+target (`db.namespace`, then `server.address[:server.port]`), else
+`db.system.name`.
 """.
 -spec span_name(map()) -> binary().
 span_name(#{'db.query.summary' := Summary}) ->
@@ -228,27 +260,18 @@ span_name(#{'server.address' := Address}) ->
 span_name(#{'db.system.name' := DbSystem}) ->
     DbSystem.
 
--doc """
-`db.namespace` in PostgreSQL's `{database}|{schema}` form. The schema is the
-tenant prefix, when the query runs under one.
-""".
--spec namespace(binary() | undefined, tenant()) -> binary() | undefined.
-namespace(Database, {prefix, Schema}) when is_binary(Database) ->
-    <<Database/binary, "|", Schema/binary>>;
-namespace(undefined, {prefix, Schema}) ->
-    Schema;
-namespace(Database, _Tenant) ->
-    Database.
+-doc "`db.namespace` in PostgreSQL's `{database}|{schema}` form.".
+-spec namespace(binary() | undefined, binary()) -> binary().
+namespace(undefined, Schema) -> Schema;
+namespace(Database, Schema) -> <<Database/binary, "|", Schema/binary>>.
 
--spec attribute_tenant(tenant()) -> binary() | undefined.
-attribute_tenant({attribute, {Field, Value}}) ->
+-spec tenant_label(tenant()) -> binary() | undefined.
+tenant_label({prefix, Prefix}) ->
+    Prefix;
+tenant_label({attribute, {Field, Value}}) ->
     iolist_to_binary([atom_to_binary(Field, utf8), ~":", format_value(Value)]);
-attribute_tenant(_Tenant) ->
+tenant_label(undefined) ->
     undefined.
-
--spec legacy_tenant(tenant()) -> binary() | undefined.
-legacy_tenant({prefix, Prefix}) -> Prefix;
-legacy_tenant(Tenant) -> attribute_tenant(Tenant).
 
 -spec server_port(connection()) -> inet:port_number() | undefined.
 server_port(#{server_address := _, server_port := Port}) -> Port;
