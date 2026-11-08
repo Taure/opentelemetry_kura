@@ -26,6 +26,7 @@
     duration_metric/1,
     tenant_in_namespace/1,
     repo_system/1,
+    no_metrics_sdk/1,
     prefix_tenant_metric/1
 ]).
 
@@ -53,7 +54,8 @@ all() ->
         dup_mode_env,
         dup_mode_failed_query,
         duration_metric,
-        prefix_tenant_metric
+        prefix_tenant_metric,
+        no_metrics_sdk
     ].
 
 init_per_suite(Config) ->
@@ -360,7 +362,27 @@ prefix_tenant_metric(_Config) ->
     ?assertEqual([], [A || #{attributes := A} <- Datapoints, has_value(~"acme", A)]),
     ok.
 
+no_metrics_sdk(_Config) ->
+    Peer = start_peer(),
+    ok = peer:call(Peer, code, add_pathsa, [code:get_path()]),
+    {ok, _} = peer:call(Peer, application, ensure_all_started, [telemetry]),
+    ?assertEqual(undefined, peer:call(Peer, erlang, whereis, [otel_meter_provider_global])),
+    ?assertEqual(ok, peer:call(Peer, opentelemetry_kura, setup, [])),
+    ok = peer:call(Peer, telemetry, execute, [
+        [kura, repo, query], #{duration => 1000, duration_us => 1}, metadata(#{})
+    ]),
+    ?assertMatch(
+        [#{id := ~"opentelemetry-kura-query"}],
+        peer:call(Peer, telemetry, list_handlers, [[kura, repo, query]])
+    ),
+    peer:stop(Peer).
+
 %% Helpers
+
+start_peer() ->
+    case ?CT_PEER(#{connection => standard_io}) of
+        {ok, Peer, _Node} when is_pid(Peer) -> Peer
+    end.
 
 prefix_tenant_metadata(Overrides) ->
     metadata(
