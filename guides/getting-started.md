@@ -58,7 +58,8 @@ See the README for the full attribute list and for upgrading from 0.2.
 
 ## Configuration
 
-Pass options to `setup/1` to customise behaviour:
+Pass options to `setup/1` to customise behaviour. `db.system.name` defaults to
+`postgresql`; give a kura_sqlite repo `system => ~"sqlite"` in `repos`:
 
 ```erlang
 opentelemetry_kura:setup(#{
@@ -69,10 +70,10 @@ opentelemetry_kura:setup(#{
 
 | Option              | Default         | Description                                         |
 |---------------------|-----------------|-----------------------------------------------------|
-| `db_system`         | `~"postgresql"` | Value for `db.system.name`                          |
+| `db_system`         | `~"postgresql"` | `db.system.name` for repos without a `system`       |
 | `semconv_stability` | `stable`        | `dup` also emits the 0.2 attribute names            |
 | `returned_rows`     | `false`         | Set `db.response.returned_rows`                     |
-| `repos`             | `#{}`           | Per-repo `namespace`, `server_address`, `server_port` |
+| `repos`             | `#{}`           | Per-repo `system`, `namespace`, `server_address`, `server_port` |
 | `tenant_in_namespace` | `false`       | Put a prefix tenant's schema in `db.namespace`      |
 | `sanitize_query`    | unset           | `true` or a `fun/1` to redact `db.query.text`       |
 

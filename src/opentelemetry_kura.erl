@@ -41,6 +41,7 @@ opentelemetry_kura:setup().
 
 -type stability() :: stable | dup.
 -type connection() :: #{
+    system => binary(),
     namespace => binary(),
     server_address => binary(),
     server_port => inet:port_number()
@@ -58,7 +59,8 @@ setup() ->
 Attach the telemetry handler with options.
 
 Options:
-- `db_system`: value of `db.system.name` (default: `~"postgresql"`).
+- `db_system`: value of `db.system.name` for repos without a `system` in
+  `repos` (default: `~"postgresql"`).
 - `semconv_stability`: `stable` emits only the stable database conventions,
   `dup` emits the stable attributes and the experimental ones this
   library emitted before them. Defaults to
@@ -67,6 +69,7 @@ Options:
 - `returned_rows`: when `true`, sets the opt-in `db.response.returned_rows`
   attribute (default: `false`).
 - `repos`: a map from repo module to `t:connection/0`, the source of
+  `db.system.name` (`system`, e.g. `~"sqlite"` for a kura_sqlite repo),
   `db.namespace`, `server.address` and `server.port`.
 - `tenant_in_namespace`: when `true`, a prefix tenant's schema is appended to
   the span's `db.namespace` (`{database}|{schema}`) instead of being recorded
@@ -148,7 +151,7 @@ target_attributes(Metadata, Config) ->
         tenant := Tenant,
         error_reason := ErrorReason
     } = Metadata,
-    Connection = maps:get(Repo, maps:get(repos, Config, #{}), #{}),
+    Connection = connection(Repo, Config),
     Optional = [
         {'db.query.summary',
             query_summary(extract_operation(Query), summary_source(Source, Tenant))},
@@ -158,7 +161,7 @@ target_attributes(Metadata, Config) ->
     ],
     maps:merge(
         error_attributes(Result, ErrorReason),
-        defined(Optional, #{'db.system.name' => maps:get(db_system, Config, ~"postgresql")})
+        defined(Optional, #{'db.system.name' => db_system(Connection, Config)})
     ).
 
 -spec span_attributes(map(), map()) -> map().
@@ -169,7 +172,7 @@ span_attributes(Metadata, Config) ->
         num_rows := NumRows,
         tenant := Tenant
     } = Metadata,
-    Connection = maps:get(Repo, maps:get(repos, Config, #{}), #{}),
+    Connection = connection(Repo, Config),
     Base = #{
         'db.kura.repo' => atom_to_binary(Repo, utf8),
         'db.kura.query.parameter_count' => length(Params)
@@ -179,6 +182,14 @@ span_attributes(Metadata, Config) ->
         | tenant_attributes(maps:get(namespace, Connection, undefined), Tenant, Config)
     ],
     defined(Optional, Base).
+
+-spec connection(atom(), map()) -> connection().
+connection(Repo, Config) ->
+    maps:get(Repo, maps:get(repos, Config, #{}), #{}).
+
+-spec db_system(connection(), map()) -> binary().
+db_system(#{system := System}, _Config) -> System;
+db_system(_Connection, Config) -> maps:get(db_system, Config, ~"postgresql").
 
 -spec defined([{atom(), term()}], map()) -> map().
 defined(Optional, Attributes) ->
@@ -199,12 +210,13 @@ legacy_attributes(QueryText, Metadata, Config) ->
     #{
         query := Query,
         params := Params,
+        repo := Repo,
         num_rows := NumRows,
         source := Source,
         tenant := Tenant
     } = Metadata,
     Legacy = #{
-        'db.system' => maps:get(db_system, Config, ~"postgresql"),
+        'db.system' => db_system(connection(Repo, Config), Config),
         'db.statement' => QueryText,
         'db.operation' => extract_operation(Query),
         'db.kura.num_rows' => NumRows,

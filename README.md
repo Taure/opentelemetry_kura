@@ -30,7 +30,7 @@ That's it. Every Kura query now produces an OpenTelemetry span.
 
 | Attribute | Description |
 |---|---|
-| `db.system.name` | `"postgresql"` (configurable) |
+| `db.system.name` | The repo's `system` from `repos`, else `db_system`, else `"postgresql"`. Kura's telemetry does not say which backend ran the query, so a kura_sqlite repo needs `system => ~"sqlite"` |
 | `db.query.text` | The SQL query. Kura binds every value as a parameter, so the text is recorded as-is unless `sanitize_query` is set |
 | `db.query.summary` | `"OPERATION table"`, e.g. `"SELECT users"`. Under a prefix tenant, the operation only. Omitted when the operation is not recognised |
 | `db.namespace` | The repo's configured `namespace`. With `tenant_in_namespace => true`, a prefix tenant's schema is appended: `{database}\|{schema}` |
@@ -61,7 +61,8 @@ opentelemetry_kura:setup(#{
     semconv_stability => stable,
     returned_rows => false,
     repos => #{
-        my_repo => #{namespace => ~"my_db", server_address => ~"db.internal", server_port => 5432}
+        my_repo => #{namespace => ~"my_db", server_address => ~"db.internal", server_port => 5432},
+        cache_repo => #{system => ~"sqlite", namespace => ~"cache.db"}
     },
     tenant_in_namespace => false
 }).
@@ -69,10 +70,10 @@ opentelemetry_kura:setup(#{
 
 | Option | Default | Description |
 |---|---|---|
-| `db_system` | `~"postgresql"` | Value of `db.system.name` |
+| `db_system` | `~"postgresql"` | `db.system.name` for repos without a `system` |
 | `semconv_stability` | `stable` | `stable` or `dup`; see Upgrading |
 | `returned_rows` | `false` | Set `db.response.returned_rows` |
-| `repos` | `#{}` | Per-repo `namespace`, `server_address`, `server_port` |
+| `repos` | `#{}` | Per-repo `system`, `namespace`, `server_address`, `server_port` |
 | `tenant_in_namespace` | `false` | Put a prefix tenant's schema in the span's `db.namespace` instead of `db.kura.tenant` |
 | `sanitize_query` | unset | `true` records `[SANITIZED]`; a `fun/1` rewrites the query text |
 

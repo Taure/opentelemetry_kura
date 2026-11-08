@@ -25,6 +25,7 @@
     dup_mode_failed_query/1,
     duration_metric/1,
     tenant_in_namespace/1,
+    repo_system/1,
     prefix_tenant_metric/1
 ]).
 
@@ -42,6 +43,7 @@ all() ->
         basic_query,
         returned_rows_opt_in,
         connection_attributes,
+        repo_system,
         query_with_tenant,
         tenant_in_namespace,
         query_error,
@@ -152,6 +154,31 @@ query_with_tenant(_Config) ->
     ?assertEqual(~"org_id:42", maps:get('db.kura.tenant', Attrs2)),
     ?assertEqual(~"app_db", maps:get('db.namespace', Attrs2)),
     ?assertEqual(~"SELECT users", maps:get('db.query.summary', Attrs2)),
+    ok.
+
+repo_system(_Config) ->
+    opentelemetry_kura:setup(#{
+        semconv_stability => dup,
+        repos => #{lite_repo => #{system => ~"sqlite", namespace => ~"app.db"}}
+    }),
+    fire_event(metadata(#{repo => lite_repo})),
+    {Name, _Kind, _Status, Attrs} = receive_span(),
+    ?assertEqual(~"SELECT users", Name),
+    ?assertMatch(#{'db.system.name' := ~"sqlite", 'db.system' := ~"sqlite"}, Attrs),
+
+    fire_event(metadata(#{})),
+    ?assertMatch(#{'db.system.name' := ~"postgresql"}, span_attributes(receive_span())),
+
+    otel_meter_server:force_flush(),
+    ?assertMatch(
+        [#{'db.system.name' := ~"sqlite"}],
+        [
+            A
+         || #{attributes := #{'db.namespace' := ~"app.db"} = A} <- receive_datapoints(
+                'db.client.operation.duration'
+            )
+        ]
+    ),
     ok.
 
 tenant_in_namespace(_Config) ->
