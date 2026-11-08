@@ -22,8 +22,7 @@ opentelemetry_kura:setup().
     span_name/1,
     namespace/2,
     error_attributes/2,
-    stability_mode/1,
-    maybe_set_error/3
+    stability_mode/1
 ]).
 -endif.
 
@@ -102,11 +101,7 @@ setup(Opts) ->
 %% three back untyped.
 -spec handle_event(telemetry:event_name(), dynamic(), dynamic(), dynamic()) -> ok.
 handle_event(_Event, Measurements, Metadata, Config) ->
-    #{
-        query := Query,
-        result := Result,
-        error_reason := ErrorReason
-    } = Metadata,
+    #{query := Query} = Metadata,
     Duration = maps:get(duration, Measurements),
     QueryText = sanitize_query(Query, Config),
     Target = target_attributes(Metadata, Config),
@@ -126,7 +121,7 @@ handle_event(_Event, Measurements, Metadata, Config) ->
             attributes => AllAttributes#{'db.query.text' => QueryText}
         }
     ),
-    maybe_set_error(SpanCtx, Result, ErrorReason),
+    maybe_set_error(SpanCtx, Target),
     otel_span:end_span(SpanCtx, EndTime),
     Seconds = erlang:convert_time_unit(Duration, native, nanosecond) / 1.0e9,
     _ = otel_histogram:record(
@@ -311,15 +306,11 @@ sanitize_query(Query, #{sanitize_query := Fun}) when is_function(Fun, 1) -> Fun(
 sanitize_query(_Query, #{sanitize_query := true}) -> ~"[SANITIZED]";
 sanitize_query(Query, _Config) -> Query.
 
--spec maybe_set_error(opentelemetry:span_ctx(), ok | error, term() | undefined) -> ok.
-maybe_set_error(SpanCtx, error, undefined) ->
-    otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, ~"query failed"),
+-spec maybe_set_error(opentelemetry:span_ctx(), map()) -> ok.
+maybe_set_error(SpanCtx, #{'error.type' := ErrorType}) ->
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, ErrorType),
     ok;
-maybe_set_error(SpanCtx, error, Reason) ->
-    Msg = iolist_to_binary(io_lib:format(~"~p", [Reason])),
-    otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Msg),
-    ok;
-maybe_set_error(_SpanCtx, ok, _Reason) ->
+maybe_set_error(_SpanCtx, _Attributes) ->
     ok.
 
 -doc false.

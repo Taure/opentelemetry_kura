@@ -22,6 +22,7 @@
     sanitized_query/1,
     dup_mode_option/1,
     dup_mode_env/1,
+    dup_mode_failed_query/1,
     duration_metric/1,
     tenant_in_namespace/1,
     prefix_tenant_metric/1
@@ -48,6 +49,7 @@ all() ->
         sanitized_query,
         dup_mode_option,
         dup_mode_env,
+        dup_mode_failed_query,
         duration_metric,
         prefix_tenant_metric
     ].
@@ -177,7 +179,7 @@ query_error(_Config) ->
         })
     ),
     {_Name, _Kind, Status, Attrs} = receive_span(),
-    ?assertMatch({?OTEL_STATUS_ERROR, _}, Status),
+    ?assertEqual({?OTEL_STATUS_ERROR, ~"23505"}, Status),
     ?assertEqual(~"23505", maps:get('error.type', Attrs)),
     ?assertEqual(~"23505", maps:get('db.response.status_code', Attrs)),
     ok.
@@ -214,6 +216,29 @@ dup_mode_option(_Config) ->
             'db.system.name' := ~"postgresql",
             'db.query.text' := ~"[SANITIZED]",
             'db.query.summary' := ~"SELECT users"
+        },
+        Attrs
+    ),
+    ok.
+
+dup_mode_failed_query(_Config) ->
+    opentelemetry_kura:setup(#{semconv_stability => dup}),
+    fire_event(
+        metadata(#{
+            result => error,
+            num_rows => 0,
+            error_reason => {pgsql_error, #{code => ~"40P01", constraint => undefined}}
+        })
+    ),
+    {_Name, _Kind, Status, Attrs} = receive_span(),
+    ?assertEqual({?OTEL_STATUS_ERROR, ~"40P01"}, Status),
+    [?assert(maps:is_key(Key, Attrs)) || Key <- ?LEGACY_ATTRIBUTES],
+    ?assertMatch(
+        #{
+            'error.type' := ~"40P01",
+            'db.response.status_code' := ~"40P01",
+            'db.statement' := ~"SELECT * FROM users WHERE id = $1",
+            'db.kura.num_rows' := 0
         },
         Attrs
     ),

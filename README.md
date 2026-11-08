@@ -47,7 +47,7 @@ The span name is `db.query.summary`; without one it falls back to the configured
 
 `db.operation.name` and `db.collection.name` are not set. Both would have to be parsed from the query text, which the conventions advise against for PostgreSQL; the parsed operation and table go into `db.query.summary` instead. The table is the first one Kura's telemetry reports for the query.
 
-Failed queries also set the span status to `ERROR`.
+Failed queries also set the span status to `ERROR`, with the `error.type` value as its description. The error reason itself is never recorded, since a PostgreSQL error can carry row values.
 
 ## Metrics
 

@@ -1,8 +1,6 @@
 -module(opentelemetry_kura_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--eqwalizer({nowarn_function, maybe_set_error_test/0}).
-
 extract_operation_test() ->
     ?assertEqual(~"SELECT", opentelemetry_kura:extract_operation(~"SELECT * FROM users")),
     ?assertEqual(~"INSERT", opentelemetry_kura:extract_operation(~"INSERT INTO users")),
@@ -98,7 +96,3 @@ sanitize_query_test() ->
         ~"REDACTED: SELECT * FROM users WHERE id = $1",
         opentelemetry_kura:sanitize_query(Query, #{sanitize_query => Fun})
     ).
-
-maybe_set_error_test() ->
-    ?assertEqual(ok, opentelemetry_kura:maybe_set_error(undefined, ok, undefined)),
-    ?assertEqual(ok, opentelemetry_kura:maybe_set_error(undefined, ok, some_reason)).
