@@ -14,19 +14,17 @@ opentelemetry_kura:setup().
 """.
 
 -export([setup/0, setup/1, handle_event/4]).
+-export([extract_operation/1, format_value/1, sanitize_query/2]).
+
+-ifdef(TEST).
 -export([
-    extract_operation/1,
     query_summary/2,
     span_name/1,
     namespace/2,
     error_attributes/2,
     stability_mode/1,
-    format_value/1,
-    sanitize_query/2
+    maybe_set_error/3
 ]).
-
--ifdef(TEST).
--export([maybe_set_error/3]).
 -endif.
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
@@ -137,10 +135,8 @@ handle_event(_Event, Measurements, Metadata, Config) ->
 
 -spec meter() -> otel_meter:t().
 meter() ->
-    case opentelemetry:get_application_scope(?MODULE) of
-        undefined -> opentelemetry_experimental:get_meter();
-        Scope -> opentelemetry_experimental:get_meter(Scope)
-    end.
+    #instrumentation_scope{} = Scope = opentelemetry:get_application_scope(?MODULE),
+    opentelemetry_experimental:get_meter(Scope).
 
 -spec stable_attributes(map(), map()) -> map().
 stable_attributes(Metadata, Config) ->
