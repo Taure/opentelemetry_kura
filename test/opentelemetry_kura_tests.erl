@@ -1,7 +1,7 @@
 -module(opentelemetry_kura_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--eqwalizer({nowarn_function, maybe_set_error_test/0}).
+-export([redact/1]).
 
 extract_operation_test() ->
     ?assertEqual(~"SELECT", opentelemetry_kura:extract_operation(~"SELECT * FROM users")),
@@ -16,40 +16,83 @@ extract_operation_test() ->
     ?assertEqual(~"ROLLBACK", opentelemetry_kura:extract_operation(~"ROLLBACK")),
     ?assertEqual(~"OTHER", opentelemetry_kura:extract_operation(~"EXPLAIN SELECT 1")).
 
+query_summary_test() ->
+    ?assertEqual(~"SELECT users", opentelemetry_kura:query_summary(~"SELECT", ~"users")),
+    ?assertEqual(~"INSERT posts", opentelemetry_kura:query_summary(~"INSERT", ~"posts")),
+    ?assertEqual(~"BEGIN", opentelemetry_kura:query_summary(~"BEGIN", undefined)),
+    ?assertEqual(undefined, opentelemetry_kura:query_summary(~"OTHER", ~"users")),
+    ?assertEqual(undefined, opentelemetry_kura:query_summary(~"OTHER", undefined)).
+
 span_name_test() ->
-    ?assertEqual(~"SELECT users", opentelemetry_kura:span_name(~"SELECT", ~"users")),
-    ?assertEqual(~"INSERT posts", opentelemetry_kura:span_name(~"INSERT", ~"posts")),
-    ?assertEqual(~"SELECT", opentelemetry_kura:span_name(~"SELECT", undefined)).
+    Base = #{'db.system.name' => ~"postgresql"},
+    ?assertEqual(
+        ~"SELECT users",
+        opentelemetry_kura:span_name(Base#{
+            'db.query.summary' => ~"SELECT users", 'db.namespace' => ~"app"
+        })
+    ),
+    ?assertEqual(
+        ~"app|acme",
+        opentelemetry_kura:span_name(Base#{
+            'db.namespace' => ~"app|acme", 'server.address' => ~"db.local"
+        })
+    ),
+    ?assertEqual(
+        ~"db.local:6432",
+        opentelemetry_kura:span_name(Base#{
+            'server.address' => ~"db.local", 'server.port' => 6432
+        })
+    ),
+    ?assertEqual(
+        ~"db.local", opentelemetry_kura:span_name(Base#{'server.address' => ~"db.local"})
+    ),
+    ?assertEqual(~"postgresql", opentelemetry_kura:span_name(Base)).
 
-maybe_add_source_test() ->
-    Base = #{'db.system' => ~"postgresql"},
-    ?assertEqual(
-        Base#{'db.collection.name' => ~"users"},
-        opentelemetry_kura:maybe_add_source(Base, ~"users")
-    ),
-    ?assertEqual(Base, opentelemetry_kura:maybe_add_source(Base, undefined)).
+namespace_test() ->
+    ?assertEqual(~"app|acme", opentelemetry_kura:namespace(~"app", ~"acme")),
+    ?assertEqual(~"acme", opentelemetry_kura:namespace(undefined, ~"acme")).
 
-maybe_add_tenant_test() ->
-    Base = #{'db.system' => ~"postgresql"},
-    ?assertEqual(Base, opentelemetry_kura:maybe_add_tenant(Base, undefined)),
+error_attributes_test() ->
+    ?assertEqual(#{}, opentelemetry_kura:error_attributes(ok, undefined)),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"acme"},
-        opentelemetry_kura:maybe_add_tenant(Base, {prefix, ~"acme"})
+        #{'error.type' => ~"23505", 'db.response.status_code' => ~"23505"},
+        opentelemetry_kura:error_attributes(
+            error, {pgsql_error, #{code => ~"23505", constraint => ~"users_name_key"}}
+        )
     ),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"org_id:42"},
-        opentelemetry_kura:maybe_add_tenant(Base, {attribute, {org_id, 42}})
+        #{'error.type' => ~"timeout"}, opentelemetry_kura:error_attributes(error, timeout)
     ),
     ?assertEqual(
-        Base#{'db.kura.tenant' => ~"region:eu-west"},
-        opentelemetry_kura:maybe_add_tenant(Base, {attribute, {region, ~"eu-west"}})
-    ).
+        #{'error.type' => ~"unique_violation"},
+        opentelemetry_kura:error_attributes(error, {unique_violation, ~"users_name_key"})
+    ),
+    ?assertEqual(
+        #{'error.type' => ~"_OTHER"}, opentelemetry_kura:error_attributes(error, undefined)
+    ),
+    ?assertEqual(#{'error.type' => ~"_OTHER"}, opentelemetry_kura:error_attributes(error, "boom")).
+
+stability_mode_test() ->
+    ?assertEqual(stable, opentelemetry_kura:stability_mode(false)),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("")),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("database")),
+    ?assertEqual(stable, opentelemetry_kura:stability_mode("http/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("database/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("http, database/dup")),
+    ?assertEqual(dup, opentelemetry_kura:stability_mode("database,database/dup")).
 
 format_value_test() ->
     ?assertEqual(~"hello", opentelemetry_kura:format_value(~"hello")),
     ?assertEqual(~"world", opentelemetry_kura:format_value(world)),
     ?assertEqual(~"42", opentelemetry_kura:format_value(42)),
-    ?assertEqual(~"[1,2,3]", opentelemetry_kura:format_value([1, 2, 3])).
+    ?assertEqual(~"[1,2,3]", opentelemetry_kura:format_value([1, 2, 3])),
+    ?assertEqual(~"{a,<<\"é\"/utf8>>}", opentelemetry_kura:format_value({a, ~"é"})),
+    Long = binary:copy(~"x", 10000),
+    Deep = nested(1000),
+    [
+        ?assert(byte_size(opentelemetry_kura:format_value(Value)) =< 160)
+     || Value <- [Long, lists:seq(1, 10000), Deep, 1 bsl 4096, #{K => K || K <- lists:seq(1, 500)}]
+    ].
 
 sanitize_query_test() ->
     Query = ~"SELECT * FROM users WHERE id = $1",
@@ -61,8 +104,33 @@ sanitize_query_test() ->
     ?assertEqual(
         ~"REDACTED: SELECT * FROM users WHERE id = $1",
         opentelemetry_kura:sanitize_query(Query, #{sanitize_query => Fun})
+    ),
+    ?assertEqual(
+        ~"SELECT ?",
+        opentelemetry_kura:sanitize_query(Query, #{sanitize_query => {?MODULE, redact}})
+    ),
+    ?assertEqual(
+        ~"[SANITIZED]",
+        opentelemetry_kura:sanitize_query(Query, #{sanitize_query => {erlang, binary_to_list}})
     ).
 
-maybe_set_error_test() ->
-    ?assertEqual(ok, opentelemetry_kura:maybe_set_error(undefined, ok, undefined)),
-    ?assertEqual(ok, opentelemetry_kura:maybe_set_error(undefined, ok, some_reason)).
+redact(_Query) ->
+    ~"SELECT ?".
+
+invalid_repos_test() ->
+    [
+        ?assertError({invalid_repos, Repos}, opentelemetry_kura:setup(#{repos => Repos}))
+     || Repos <- [
+            [my_repo],
+            #{"my_repo" => #{}},
+            #{my_repo => [{namespace, ~"db"}]},
+            #{my_repo => #{namespace => "db"}},
+            #{my_repo => #{server_port => 0}},
+            #{my_repo => #{server_port => 70000}},
+            #{my_repo => #{system => postgresql}},
+            #{my_repo => #{password => ~"secret"}}
+        ]
+    ].
+
+nested(0) -> [];
+nested(Depth) -> [nested(Depth - 1)].

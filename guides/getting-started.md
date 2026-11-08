@@ -33,40 +33,56 @@ stop(_State) ->
 ```
 
 This attaches a telemetry handler to Kura's `[kura, repo, query]` event. Every
-database query that Kura executes will now produce an OpenTelemetry span.
+database query that Kura executes will now produce an OpenTelemetry span and a
+`db.client.operation.duration` measurement.
+
+To export the metric, `opentelemetry_experimental` must be running before
+`setup/1` is called: the meter is looked up then, and without the SDK the
+no-op meter is cached and kept. Listing it in your release's applications
+starts it before your application. Without it, `setup/1` still works and only
+the metric is dropped.
 
 ## Span details
 
-Each span is created as a `CLIENT` span with the following attributes:
+Each span is a `CLIENT` span following the stable OpenTelemetry database
+semantic conventions:
 
-| Attribute              | Example              | Description                        |
-|------------------------|----------------------|------------------------------------|
-| `db.system`            | `<<"postgresql">>`   | Database system                    |
-| `db.statement`         | `<<"SELECT ...">>`   | The SQL query                      |
-| `db.operation`         | `<<"SELECT">>`       | SQL operation extracted from query |
-| `db.collection.name`   | `<<"users">>`        | Table name (from Kura source)      |
-| `db.kura.repo`         | `<<"my_app_repo">>`  | Kura repo module                   |
-| `db.kura.num_rows`     | `3`                  | Number of rows returned/affected   |
+| Attribute          | Example                      | Description                       |
+|--------------------|------------------------------|-----------------------------------|
+| `db.system.name`   | `~"postgresql"`              | Database system                   |
+| `db.query.text`    | `~"SELECT ... WHERE id = $1"`| The SQL query                     |
+| `db.query.summary` | `~"SELECT users"`            | Operation and table               |
+| `db.namespace`     | `~"my_db"`                   | Configured database name          |
+| `db.kura.repo`     | `~"my_app_repo"`             | Kura repo module                  |
 
-Span names follow the pattern `"OPERATION table"`, for example `"SELECT users"`
-or `"INSERT posts"`. If no table source is available, the span name is just the
-operation (e.g., `"BEGIN"`).
+The span name is `db.query.summary`, for example `"SELECT users"` or
+`"BEGIN"`. Failed queries set the span status to `ERROR` and add `error.type`
+and, for PostgreSQL errors, `db.response.status_code` (the SQLSTATE code).
 
-Failed queries set the span status to `ERROR` with the message `"query failed"`.
+Each query is also recorded in the `db.client.operation.duration` histogram.
+
+See the README for the full attribute list and for upgrading from 0.2.
 
 ## Configuration
 
-Pass options to `setup/1` to customize behaviour:
+Pass options to `setup/1` to customise behaviour. `db.system.name` defaults to
+`postgresql`; give a kura_sqlite repo `system => ~"sqlite"` in `repos`:
 
 ```erlang
 opentelemetry_kura:setup(#{
-    db_system => <<"cockroachdb">>
+    db_system => ~"cockroachdb",
+    repos => #{my_app_repo => #{namespace => ~"my_db", server_address => ~"db.internal"}}
 }).
 ```
 
-| Option      | Default            | Description             |
-|-------------|--------------------|-------------------------|
-| `db_system` | `<<"postgresql">>` | Value for `db.system`   |
+| Option              | Default         | Description                                         |
+|---------------------|-----------------|-----------------------------------------------------|
+| `db_system`         | `~"postgresql"` | `db.system.name` for repos without a `system`       |
+| `semconv_stability` | `stable`        | `dup` also emits the 0.2 attribute names            |
+| `returned_rows`     | `false`         | Set `db.response.returned_rows`                     |
+| `repos`             | `#{}`           | Per-repo `system`, `namespace`, `server_address`, `server_port` |
+| `tenant_in_namespace` | `false`       | Put a prefix tenant's schema in `db.namespace`      |
+| `sanitize_query`    | unset           | `true` or `{Mod, Fun}` to redact `db.query.text`    |
 
 ## Viewing traces
 
@@ -88,6 +104,29 @@ stdout during development:
     {opentelemetry, [
         {span_processor, batch},
         {traces_exporter, {otel_exporter_stdout, []}}
+    ]}
+].
+```
+
+To export the `db.client.operation.duration` metric as well, add
+`opentelemetry_experimental` and configure a metric reader. The OTLP metric
+exporter uses `opentelemetry_exporter`, listed above:
+
+```erlang
+%% rebar.config
+{deps, [
+    {opentelemetry_experimental, "~> 0.6"}
+]}.
+```
+
+```erlang
+%% sys.config
+[
+    {opentelemetry_experimental, [
+        {readers, [
+            #{module => otel_metric_reader,
+              config => #{exporter => {otel_exporter_metrics_otlp, #{}}}}
+        ]}
     ]}
 ].
 ```
