@@ -27,6 +27,7 @@
     tenant_in_namespace/1,
     repo_system/1,
     no_metrics_sdk/1,
+    error_type_metric_labels/1,
     malformed_metadata/1,
     prefix_tenant_metric/1
 ]).
@@ -55,6 +56,7 @@ all() ->
         dup_mode_env,
         dup_mode_failed_query,
         duration_metric,
+        error_type_metric_labels,
         prefix_tenant_metric,
         malformed_metadata,
         no_metrics_sdk
@@ -340,6 +342,22 @@ duration_metric(_Config) ->
     ?assert(abs(maps:get(sum, Ok) - 0.25) < 0.001),
     [Failed] = [A || #{attributes := #{'error.type' := ~"57014"} = A} <- Datapoints],
     ?assertEqual(~"57014", maps:get('db.response.status_code', Failed)),
+    ok.
+
+error_type_metric_labels(_Config) ->
+    opentelemetry_kura:setup(#{repos => #{error_repo => #{namespace => ~"error_db"}}}),
+    [
+        fire_event(metadata(#{repo => error_repo, result => error, error_reason => Reason}))
+     || Reason <- [timeout, {disconnected, closed}, "boom", undefined]
+    ],
+    [receive_span() || _ <- lists:seq(1, 4)],
+    otel_meter_server:force_flush(),
+    Datapoints = receive_datapoints('db.client.operation.duration'),
+    Labels = lists:sort([
+        {maps:get('error.type', A), Count}
+     || #{attributes := #{'db.namespace' := ~"error_db"} = A, count := Count} <- Datapoints
+    ]),
+    ?assertEqual([{~"_OTHER", 2}, {~"disconnected", 1}, {~"timeout", 1}], Labels),
     ok.
 
 prefix_tenant_metric(_Config) ->
