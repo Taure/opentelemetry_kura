@@ -83,7 +83,14 @@ format_value_test() ->
     ?assertEqual(~"hello", opentelemetry_kura:format_value(~"hello")),
     ?assertEqual(~"world", opentelemetry_kura:format_value(world)),
     ?assertEqual(~"42", opentelemetry_kura:format_value(42)),
-    ?assertEqual(~"[1,2,3]", opentelemetry_kura:format_value([1, 2, 3])).
+    ?assertEqual(~"[1,2,3]", opentelemetry_kura:format_value([1, 2, 3])),
+    ?assertEqual(~"{a,<<\"é\"/utf8>>}", opentelemetry_kura:format_value({a, ~"é"})),
+    Long = binary:copy(~"x", 10000),
+    Deep = nested(1000),
+    [
+        ?assert(byte_size(opentelemetry_kura:format_value(Value)) =< 160)
+     || Value <- [Long, lists:seq(1, 10000), Deep, 1 bsl 4096, #{K => K || K <- lists:seq(1, 500)}]
+    ].
 
 sanitize_query_test() ->
     Query = ~"SELECT * FROM users WHERE id = $1",
@@ -111,3 +118,6 @@ invalid_repos_test() ->
             #{my_repo => #{password => ~"secret"}}
         ]
     ].
+
+nested(0) -> [];
+nested(Depth) -> [nested(Depth - 1)].

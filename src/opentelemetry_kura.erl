@@ -28,6 +28,7 @@ opentelemetry_kura:setup().
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 
+-define(MAX_TENANT_VALUE, 128).
 -define(DURATION_METRIC, 'db.client.operation.duration').
 -define(METRIC_ATTRIBUTES, [
     'db.system.name',
@@ -386,10 +387,15 @@ error_attributes(error, _Reason) ->
 
 -doc false.
 -spec format_value(term()) -> binary().
-format_value(V) when is_binary(V) -> V;
+format_value(V) when is_binary(V), byte_size(V) =< ?MAX_TENANT_VALUE -> V;
 format_value(V) when is_atom(V) -> atom_to_binary(V, utf8);
-format_value(V) when is_integer(V) -> integer_to_binary(V);
-format_value(V) -> iolist_to_binary(io_lib:format(~"~p", [V])).
+format_value(V) when is_integer(V), abs(V) < 1 bsl 64 -> integer_to_binary(V);
+format_value(V) ->
+    Formatted = io_lib:format(~"~tP", [V, 10], [{chars_limit, ?MAX_TENANT_VALUE}]),
+    case unicode:characters_to_binary(string:slice(Formatted, 0, ?MAX_TENANT_VALUE)) of
+        Binary when is_binary(Binary) -> Binary;
+        _Invalid -> ~"_OTHER"
+    end.
 
 -doc false.
 -spec sanitize_query(binary(), map()) -> binary().
