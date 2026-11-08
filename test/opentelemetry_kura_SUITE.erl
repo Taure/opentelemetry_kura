@@ -31,7 +31,8 @@
     unknown_operation/1,
     sanitized_query/1,
     dup_mode_option/1,
-    dup_mode_env/1
+    dup_mode_env/1,
+    duration_metric/1
 ]).
 
 -define(LEGACY_ATTRIBUTES, [
@@ -53,7 +54,8 @@ all() ->
         unknown_operation,
         sanitized_query,
         dup_mode_option,
-        dup_mode_env
+        dup_mode_env,
+        duration_metric
     ].
 
 init_per_suite(Config) ->
@@ -65,18 +67,28 @@ init_per_suite(Config) ->
         {otel_simple_processor, #{}}
     ]),
     {ok, _} = application:ensure_all_started(opentelemetry),
+    ok = application:set_env(opentelemetry_experimental, readers, [
+        #{
+            module => otel_metric_reader,
+            config => #{exporter => {opentelemetry_kura_metric_exporter, []}}
+        }
+    ]),
+    {ok, _} = application:ensure_all_started(opentelemetry_experimental),
     Config.
 
 end_per_suite(_Config) ->
+    application:stop(opentelemetry_experimental),
     application:stop(opentelemetry),
     ok.
 
 init_per_testcase(_TestCase, Config) ->
     otel_simple_processor:set_exporter(otel_exporter_pid, self()),
+    persistent_term:put(opentelemetry_kura_metric_pid, self()),
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
     telemetry:detach(~"opentelemetry-kura-query"),
+    persistent_term:erase(opentelemetry_kura_metric_pid),
     os:unsetenv("OTEL_SEMCONV_STABILITY_OPT_IN"),
     ok.
 
@@ -224,6 +236,50 @@ dup_mode_env(_Config) ->
     ?assertNot(maps:is_key('db.statement', OverriddenAttrs)),
     ok.
 
+duration_metric(_Config) ->
+    opentelemetry_kura:setup(#{
+        repos => #{metric_repo => #{namespace => ~"metric_db", server_address => ~"db.internal"}}
+    }),
+    fire_event(
+        metadata(#{repo => metric_repo, source => ~"metric_events"}),
+        erlang:convert_time_unit(250, millisecond, native)
+    ),
+    fire_event(
+        metadata(#{
+            repo => metric_repo,
+            source => ~"metric_events",
+            result => error,
+            error_reason => {pgsql_error, #{code => ~"57014"}}
+        }),
+        erlang:convert_time_unit(10, millisecond, native)
+    ),
+    _ = receive_span(),
+    _ = receive_span(),
+    otel_meter_server:force_flush(),
+    Datapoints = receive_datapoints('db.client.operation.duration'),
+    [Ok] = [
+        DP
+     || #{attributes := #{'db.namespace' := ~"metric_db"} = A} = DP <- Datapoints,
+        not is_map_key('error.type', A)
+    ],
+    ?assertMatch(
+        #{
+            attributes := #{
+                'db.system.name' := ~"postgresql",
+                'db.namespace' := ~"metric_db",
+                'db.query.summary' := ~"SELECT metric_events",
+                'server.address' := ~"db.internal"
+            },
+            count := 1
+        },
+        Ok
+    ),
+    ?assertEqual(4, map_size(maps:get(attributes, Ok))),
+    ?assert(abs(maps:get(sum, Ok) - 0.25) < 0.001),
+    [Failed] = [A || #{attributes := #{'error.type' := ~"57014"} = A} <- Datapoints],
+    ?assertEqual(~"57014", maps:get('db.response.status_code', Failed)),
+    ok.
+
 %% Helpers
 
 metadata(Overrides) ->
@@ -242,11 +298,21 @@ metadata(Overrides) ->
     ).
 
 fire_event(Metadata) ->
-    telemetry:execute([kura, repo, query], #{duration => 1000, duration_us => 1}, Metadata).
+    fire_event(Metadata, 1000).
+
+fire_event(Metadata, Duration) ->
+    telemetry:execute([kura, repo, query], #{duration => Duration, duration_us => 1}, Metadata).
 
 receive_span() ->
     receive
         {span, Span} -> Span
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
+    end.
+
+receive_datapoints(Name) ->
+    receive
+        {otel_histogram, Name, Datapoints} -> Datapoints
+    after 5000 ->
+        ct:fail({timeout_waiting_for_metric, Name})
     end.

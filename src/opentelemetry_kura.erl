@@ -2,8 +2,9 @@
 -moduledoc """
 OpenTelemetry instrumentation for Kura.
 
-Subscribes to Kura's `[kura, repo, query]` telemetry events and creates a
-`CLIENT` span for each database query, following the stable OpenTelemetry
+Subscribes to Kura's `[kura, repo, query]` telemetry events, creates a
+`CLIENT` span for each database query and records the
+`db.client.operation.duration` histogram, following the stable OpenTelemetry
 database semantic conventions.
 
 ```erlang
@@ -29,6 +30,17 @@ opentelemetry_kura:setup().
 -endif.
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
+
+-define(DURATION_METRIC, 'db.client.operation.duration').
+-define(METRIC_ATTRIBUTES, [
+    'db.system.name',
+    'db.namespace',
+    'db.query.summary',
+    'db.response.status_code',
+    'error.type',
+    'server.address',
+    'server.port'
+]).
 
 -type stability() :: stable | dup.
 -type connection() :: #{
@@ -64,6 +76,13 @@ Options:
 """.
 -spec setup(map()) -> ok.
 setup(Opts) ->
+    _ = otel_meter:create_histogram(meter(), ?DURATION_METRIC, #{
+        description => ~"Duration of database client operations.",
+        unit => s,
+        advisory_params => #{
+            explicit_bucket_boundaries => [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
+        }
+    }),
     Stability = maps:get(
         semconv_stability, Opts, stability_mode(os:getenv("OTEL_SEMCONV_STABILITY_OPT_IN"))
     ),
@@ -106,7 +125,22 @@ handle_event(_Event, Measurements, Metadata, Config) ->
     ),
     maybe_set_error(SpanCtx, Result, ErrorReason),
     otel_span:end_span(SpanCtx, EndTime),
+    Seconds = erlang:convert_time_unit(Duration, native, nanosecond) / 1.0e9,
+    _ = otel_histogram:record(
+        otel_ctx:get_current(),
+        meter(),
+        ?DURATION_METRIC,
+        Seconds,
+        maps:with(?METRIC_ATTRIBUTES, Attributes)
+    ),
     ok.
+
+-spec meter() -> otel_meter:t().
+meter() ->
+    case opentelemetry:get_application_scope(?MODULE) of
+        undefined -> opentelemetry_experimental:get_meter();
+        Scope -> opentelemetry_experimental:get_meter(Scope)
+    end.
 
 -spec stable_attributes(map(), map()) -> map().
 stable_attributes(Metadata, Config) ->

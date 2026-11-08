@@ -52,6 +52,8 @@ The span name is `db.query.summary`, for example `"SELECT users"` or
 `"BEGIN"`. Failed queries set the span status to `ERROR` and add `error.type`
 and, for PostgreSQL errors, `db.response.status_code` (the SQLSTATE code).
 
+Each query is also recorded in the `db.client.operation.duration` histogram.
+
 See the README for the full attribute list and for upgrading from 0.2.
 
 ## Configuration

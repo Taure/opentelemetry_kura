@@ -2,7 +2,7 @@
 
 OpenTelemetry instrumentation for [Kura](https://github.com/Taure/kura), the Erlang database layer.
 
-Creates an OpenTelemetry span for every Kura database query, by subscribing to Kura's `[kura, repo, query]` telemetry event. Spans follow the stable [OpenTelemetry database semantic conventions](https://opentelemetry.io/docs/specs/semconv/database/database-spans/).
+Creates an OpenTelemetry span and records the `db.client.operation.duration` histogram for every Kura database query, by subscribing to Kura's `[kura, repo, query]` telemetry event. Spans and the metric follow the stable [OpenTelemetry database semantic conventions](https://opentelemetry.io/docs/specs/semconv/database/database-spans/).
 
 ## Installation
 
@@ -48,6 +48,10 @@ The span name is `db.query.summary`; without one it falls back to `db.namespace`
 `db.operation.name` and `db.collection.name` are not set. Both would have to be parsed from the query text, which the conventions advise against for PostgreSQL; the parsed operation and table go into `db.query.summary` instead. The table is the first one Kura's telemetry reports for the query.
 
 Failed queries also set the span status to `ERROR`.
+
+## Metrics
+
+`db.client.operation.duration` (histogram, seconds) is recorded for every query with `db.system.name`, `db.namespace`, `db.query.summary`, `error.type`, `db.response.status_code`, `server.address` and `server.port`, where set. Metrics go through `opentelemetry_api_experimental`; add `opentelemetry_experimental` and a metric reader to your release to export them, and start it before calling `setup/1`.
 
 ## Options
 
