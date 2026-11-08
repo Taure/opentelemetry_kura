@@ -31,8 +31,8 @@ That's it. Every Kura query now produces an OpenTelemetry span.
 | Attribute | Description |
 |---|---|
 | `db.system.name` | The repo's `system` from `repos`, else `db_system`, else `"postgresql"`. Kura's telemetry does not say which backend ran the query, so a kura_sqlite repo needs `system => ~"sqlite"` |
-| `db.query.text` | The SQL query. Kura binds every value as a parameter, so the text is recorded as-is unless `sanitize_query` is set |
-| `db.query.summary` | `"OPERATION table"`, e.g. `"SELECT users"`. Under a prefix tenant, the operation only. Omitted when the operation is not recognised |
+| `db.query.text` | The SQL query, recorded as-is unless `sanitize_query` is set. See [Query text](#query-text) |
+| `db.query.summary` | `"OPERATION table"`, e.g. `"SELECT users"`. Under a prefix tenant, the operation only. Omitted when the query does not start with an upper-case `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `BEGIN`, `COMMIT` or `ROLLBACK`: raw SQL starting with `WITH` (a CTE), `EXPLAIN` or a lower-case keyword gets no summary |
 | `db.namespace` | The repo's configured `namespace`. With `tenant_in_namespace => true`, a prefix tenant's schema is appended: `{database}\|{schema}` |
 | `server.address` | From the repo's `server_address` option |
 | `server.port` | From the repo's `server_port` option, when `server_address` is set |
@@ -48,6 +48,10 @@ The span name is `db.query.summary`; without one it falls back to the configured
 `db.operation.name` and `db.collection.name` are not set. Both would have to be parsed from the query text, which the conventions advise against for PostgreSQL; the parsed operation and table go into `db.query.summary` instead. The table is the first one Kura's telemetry reports for the query.
 
 Failed queries also set the span status to `ERROR`, with the `error.type` value as its description. The error reason itself is never recorded, since a PostgreSQL error can carry row values.
+
+## Query text
+
+Queries built through Kura's query API bind every value as a parameter, so their text holds placeholders (`$1`), not values. SQL passed to Kura directly, or a `fragment` with values written into it, may carry inline literals, and those are recorded verbatim. If your application runs raw SQL, set `sanitize_query` to redact or drop it.
 
 ## Metrics
 

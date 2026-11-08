@@ -33,7 +33,14 @@ stop(_State) ->
 ```
 
 This attaches a telemetry handler to Kura's `[kura, repo, query]` event. Every
-database query that Kura executes will now produce an OpenTelemetry span.
+database query that Kura executes will now produce an OpenTelemetry span and a
+`db.client.operation.duration` measurement.
+
+To export the metric, `opentelemetry_experimental` must be running before
+`setup/1` is called: the meter is looked up then, and without the SDK the
+no-op meter is cached and kept. Listing it in your release's applications
+starts it before your application. Without it, `setup/1` still works and only
+the metric is dropped.
 
 ## Span details
 
@@ -97,6 +104,29 @@ stdout during development:
     {opentelemetry, [
         {span_processor, batch},
         {traces_exporter, {otel_exporter_stdout, []}}
+    ]}
+].
+```
+
+To export the `db.client.operation.duration` metric as well, add
+`opentelemetry_experimental` and configure a metric reader. The OTLP metric
+exporter uses `opentelemetry_exporter`, listed above:
+
+```erlang
+%% rebar.config
+{deps, [
+    {opentelemetry_experimental, "~> 0.6"}
+]}.
+```
+
+```erlang
+%% sys.config
+[
+    {opentelemetry_experimental, [
+        {readers, [
+            #{module => otel_metric_reader,
+              config => #{exporter => {otel_exporter_metrics_otlp, #{}}}}
+        ]}
     ]}
 ].
 ```
