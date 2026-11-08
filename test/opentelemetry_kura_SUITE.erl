@@ -27,6 +27,7 @@
     tenant_in_namespace/1,
     repo_system/1,
     no_metrics_sdk/1,
+    malformed_metadata/1,
     prefix_tenant_metric/1
 ]).
 
@@ -55,6 +56,7 @@ all() ->
         dup_mode_failed_query,
         duration_metric,
         prefix_tenant_metric,
+        malformed_metadata,
         no_metrics_sdk
     ].
 
@@ -360,6 +362,32 @@ prefix_tenant_metric(_Config) ->
         [A || #{attributes := #{'db.namespace' := ~"tenant_db"} = A} <- Datapoints]
     ),
     ?assertEqual([], [A || #{attributes := A} <- Datapoints, has_value(~"acme", A)]),
+    ok.
+
+malformed_metadata(_Config) ->
+    opentelemetry_kura:setup(#{semconv_stability => dup}),
+    fire_event(#{}),
+    {EmptyName, _Kind, undefined, EmptyAttrs} = receive_span(),
+    ?assertEqual(~"postgresql", EmptyName),
+    ?assertMatch(#{'db.query.text' := ~"", 'db.kura.query.parameter_count' := 0}, EmptyAttrs),
+    fire_event(#{
+        query => [~"SELECT", ~" 1"],
+        params => not_a_list,
+        repo => "my_repo",
+        result => 'maybe',
+        num_rows => -1,
+        source => users,
+        tenant => {prefix, "acme"},
+        error_reason => {pgsql_error, #{}},
+        extra => ignored
+    }),
+    {_Name, _Kind2, undefined, Attrs} = receive_span(),
+    ?assertNot(maps:is_key('db.kura.repo', Attrs)),
+    ?assertNot(maps:is_key('db.kura.tenant', Attrs)),
+    ?assertEqual(0, maps:get('db.kura.num_rows', Attrs)),
+    ?assertMatch(
+        [#{id := ~"opentelemetry-kura-query"}], telemetry:list_handlers([kura, repo, query])
+    ),
     ok.
 
 no_metrics_sdk(_Config) ->

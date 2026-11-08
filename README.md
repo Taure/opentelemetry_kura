@@ -77,6 +77,8 @@ opentelemetry_kura:setup(#{
 | `tenant_in_namespace` | `false` | Put a prefix tenant's schema in the span's `db.namespace` instead of `db.kura.tenant` |
 | `sanitize_query` | unset | `true` records `[SANITIZED]`; a `fun/1` rewrites the query text |
 
+`setup/1` raises `{invalid_repos, Repos}` for a `repos` entry with an unknown key or a wrongly typed value.
+
 ## Upgrading from 0.2
 
 The attributes follow the stable database conventions. The old names are gone by default:

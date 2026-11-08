@@ -47,6 +47,16 @@ opentelemetry_kura:setup().
     server_port => inet:port_number()
 }.
 -type tenant() :: undefined | {prefix, binary()} | {attribute, {atom(), term()}}.
+-type event() :: #{
+    query := binary(),
+    parameter_count := non_neg_integer(),
+    repo := atom(),
+    result := ok | error,
+    num_rows := non_neg_integer(),
+    source := binary() | undefined,
+    tenant := tenant(),
+    error_reason := term()
+}.
 
 -export_type([stability/0, connection/0]).
 
@@ -68,7 +78,9 @@ Options:
   otherwise `stable`.
 - `returned_rows`: when `true`, sets the opt-in `db.response.returned_rows`
   attribute (default: `false`).
-- `repos`: a map from repo module to `t:connection/0`, the source of
+- `repos`: a map from repo module to `t:connection/0` (validated here: an
+  unknown key or a wrongly typed value raises `{invalid_repos, Repos}`), the
+  source of
   `db.system.name` (`system`, e.g. `~"sqlite"` for a kura_sqlite repo),
   `db.namespace`, `server.address` and `server.port`.
 - `tenant_in_namespace`: when `true`, a prefix tenant's schema is appended to
@@ -80,6 +92,7 @@ Options:
 """.
 -spec setup(map()) -> ok.
 setup(Opts) ->
+    validate_repos(maps:get(repos, Opts, #{})),
     _ = otel_meter:create_histogram(meter(), ?DURATION_METRIC, #{
         description => ~"Duration of database client operations.",
         unit => s,
@@ -104,15 +117,15 @@ setup(Opts) ->
 %% three back untyped.
 -spec handle_event(telemetry:event_name(), dynamic(), dynamic(), dynamic()) -> ok.
 handle_event(_Event, Measurements, Metadata, Config) ->
-    #{query := Query} = Metadata,
-    Duration = maps:get(duration, Measurements),
-    QueryText = sanitize_query(Query, Config),
-    Target = target_attributes(Metadata, Config),
-    Attributes = maps:merge(Target, span_attributes(Metadata, Config)),
+    Event = event(Metadata),
+    Duration = non_neg_integer(maps:get(duration, Measurements, 0)),
+    QueryText = sanitize_query(maps:get(query, Event), Config),
+    Target = target_attributes(Event, Config),
+    Attributes = maps:merge(Target, span_attributes(Event, Config)),
     AllAttributes =
         case maps:get(semconv_stability, Config, stable) of
-            dup -> maps:merge(legacy_attributes(QueryText, Metadata, Config), Attributes);
-            stable -> Attributes
+            dup -> maps:merge(legacy_attributes(QueryText, Event, Config), Attributes);
+            _Stable -> Attributes
         end,
     EndTime = opentelemetry:timestamp(),
     SpanCtx = otel_tracer:start_span(
@@ -141,8 +154,73 @@ meter() ->
     #instrumentation_scope{} = Scope = opentelemetry:get_application_scope(?MODULE),
     opentelemetry_experimental:get_meter(Scope).
 
--spec target_attributes(map(), map()) -> map().
-target_attributes(Metadata, Config) ->
+-spec event(map()) -> event().
+event(Metadata) ->
+    #{
+        query => binary_or(maps:get(query, Metadata, undefined), ~""),
+        parameter_count => parameter_count(maps:get(params, Metadata, [])),
+        repo => atom_or(maps:get(repo, Metadata, undefined), undefined),
+        result => result(maps:get(result, Metadata, ok)),
+        num_rows => non_neg_integer(maps:get(num_rows, Metadata, 0)),
+        source => binary_or(maps:get(source, Metadata, undefined), undefined),
+        tenant => tenant(maps:get(tenant, Metadata, undefined)),
+        error_reason => maps:get(error_reason, Metadata, undefined)
+    }.
+
+-spec binary_or(term(), Default) -> binary() | Default.
+binary_or(Value, _Default) when is_binary(Value) -> Value;
+binary_or(_Value, Default) -> Default.
+
+-spec atom_or(term(), atom()) -> atom().
+atom_or(Value, _Default) when is_atom(Value) -> Value;
+atom_or(_Value, Default) -> Default.
+
+-spec parameter_count(term()) -> non_neg_integer().
+parameter_count(Params) when is_list(Params) -> length(Params);
+parameter_count(_Params) -> 0.
+
+-spec result(term()) -> ok | error.
+result(error) -> error;
+result(_Result) -> ok.
+
+-spec non_neg_integer(term()) -> non_neg_integer().
+non_neg_integer(N) when is_integer(N), N >= 0 -> N;
+non_neg_integer(_N) -> 0.
+
+-spec tenant(term()) -> tenant().
+tenant({prefix, Prefix}) when is_binary(Prefix) -> {prefix, Prefix};
+tenant({attribute, {Field, Value}}) when is_atom(Field) -> {attribute, {Field, Value}};
+tenant(_Tenant) -> undefined.
+
+-spec validate_repos(term()) -> ok.
+validate_repos(Repos) when is_map(Repos) ->
+    case [Repo || Repo := Connection <- Repos, not valid_connection(Repo, Connection)] of
+        [] -> ok;
+        _Invalid -> error({invalid_repos, Repos})
+    end;
+validate_repos(Repos) ->
+    error({invalid_repos, Repos}).
+
+-spec valid_connection(term(), term()) -> boolean().
+valid_connection(Repo, Connection) when is_atom(Repo), is_map(Connection) ->
+    [] =:= [Key || Key := Value <- Connection, not valid_connection_option(Key, Value)];
+valid_connection(_Repo, _Connection) ->
+    false.
+
+-spec valid_connection_option(term(), term()) -> boolean().
+valid_connection_option(system, Value) ->
+    is_binary(Value);
+valid_connection_option(namespace, Value) ->
+    is_binary(Value);
+valid_connection_option(server_address, Value) ->
+    is_binary(Value);
+valid_connection_option(server_port, Value) ->
+    is_integer(Value) andalso Value > 0 andalso Value < 65536;
+valid_connection_option(_Key, _Value) ->
+    false.
+
+-spec target_attributes(event(), map()) -> map().
+target_attributes(Event, Config) ->
     #{
         query := Query,
         repo := Repo,
@@ -150,7 +228,7 @@ target_attributes(Metadata, Config) ->
         source := Source,
         tenant := Tenant,
         error_reason := ErrorReason
-    } = Metadata,
+    } = Event,
     Connection = connection(Repo, Config),
     Optional = [
         {'db.query.summary',
@@ -164,24 +242,25 @@ target_attributes(Metadata, Config) ->
         defined(Optional, #{'db.system.name' => db_system(Connection, Config)})
     ).
 
--spec span_attributes(map(), map()) -> map().
-span_attributes(Metadata, Config) ->
+-spec span_attributes(event(), map()) -> map().
+span_attributes(Event, Config) ->
     #{
-        params := Params,
+        parameter_count := ParameterCount,
         repo := Repo,
         num_rows := NumRows,
         tenant := Tenant
-    } = Metadata,
+    } = Event,
     Connection = connection(Repo, Config),
-    Base = #{
-        'db.kura.repo' => atom_to_binary(Repo, utf8),
-        'db.kura.query.parameter_count' => length(Params)
-    },
     Optional = [
+        {'db.kura.repo', repo_name(Repo)},
         {'db.response.returned_rows', returned_rows(NumRows, Config)}
         | tenant_attributes(maps:get(namespace, Connection, undefined), Tenant, Config)
     ],
-    defined(Optional, Base).
+    defined(Optional, #{'db.kura.query.parameter_count' => ParameterCount}).
+
+-spec repo_name(atom()) -> binary() | undefined.
+repo_name(undefined) -> undefined;
+repo_name(Repo) -> atom_to_binary(Repo, utf8).
 
 -spec connection(atom(), map()) -> connection().
 connection(Repo, Config) ->
@@ -205,22 +284,22 @@ tenant_attributes(Database, {prefix, Schema}, #{tenant_in_namespace := true}) ->
 tenant_attributes(_Database, Tenant, _Config) ->
     [{'db.kura.tenant', tenant_label(Tenant)}].
 
--spec legacy_attributes(binary(), map(), map()) -> map().
-legacy_attributes(QueryText, Metadata, Config) ->
+-spec legacy_attributes(binary(), event(), map()) -> map().
+legacy_attributes(QueryText, Event, Config) ->
     #{
         query := Query,
-        params := Params,
+        parameter_count := ParameterCount,
         repo := Repo,
         num_rows := NumRows,
         source := Source,
         tenant := Tenant
-    } = Metadata,
+    } = Event,
     Legacy = #{
         'db.system' => db_system(connection(Repo, Config), Config),
         'db.statement' => QueryText,
         'db.operation' => extract_operation(Query),
         'db.kura.num_rows' => NumRows,
-        'db.query.parameter_count' => length(Params)
+        'db.query.parameter_count' => ParameterCount
     },
     defined([{'db.collection.name', Source}, {'db.kura.tenant', tenant_label(Tenant)}], Legacy).
 

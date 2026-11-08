@@ -96,3 +96,18 @@ sanitize_query_test() ->
         ~"REDACTED: SELECT * FROM users WHERE id = $1",
         opentelemetry_kura:sanitize_query(Query, #{sanitize_query => Fun})
     ).
+
+invalid_repos_test() ->
+    [
+        ?assertError({invalid_repos, Repos}, opentelemetry_kura:setup(#{repos => Repos}))
+     || Repos <- [
+            [my_repo],
+            #{"my_repo" => #{}},
+            #{my_repo => [{namespace, ~"db"}]},
+            #{my_repo => #{namespace => "db"}},
+            #{my_repo => #{server_port => 0}},
+            #{my_repo => #{server_port => 70000}},
+            #{my_repo => #{system => postgresql}},
+            #{my_repo => #{password => ~"secret"}}
+        ]
+    ].
