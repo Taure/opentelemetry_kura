@@ -23,3 +23,22 @@ jobs:
       enable-audit: false
       otp-version: '28'
       enable-ex-doc: true
+
+  release:
+    needs: ci
+    if: ${{ github.event_name == 'push' }}
+    uses: Taure/erlang-ci/.github/workflows/release.yml@v2.3.2
+    permissions:
+      contents: write
+
+  hex-publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    uses: Taure/erlang-ci/.github/workflows/hex-publish.yml@v2.3.2
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      otp-version: '28'
+      rebar3-version: '3.28.0'
